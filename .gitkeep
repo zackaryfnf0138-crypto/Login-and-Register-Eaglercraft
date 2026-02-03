@@ -1,0 +1,125 @@
+ (cd "$(git rev-parse --show-toplevel)" && git apply --3way <<'EOF' 
+diff --git a/README.md b/README.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..fc90f4336b0b1cc384fff2a14ad4983e569666a6
+--- /dev/null
++++ b/README.md
+@@ -0,0 +1,44 @@
++# Eaglercraft Register/Login Auth Example
++
++This repo contains a simple in-memory authentication helper that you can wire into an Eaglercraft server event loop. It enforces:
++
++- Registration with password + password confirmation
++- Login with password
++- Kick after **3 more failed attempts** (4 total failed attempts)
++
++## Files
++
++- `src/auth.js`: Auth manager with registration + login logic
++
++## Usage Example
++
++```js
++const { AuthManager } = require("./src/auth");
++
++const auth = new AuthManager({
++  // 1 initial failure + 3 more tries = 4 total failures allowed
++  maxFailedAttempts: 4,
++  onKick: (username) => {
++    console.log(`[KICK] ${username} failed too many logins`);
++    // TODO: call your server's disconnect/kick API here
++  },
++});
++
++// Registration flow
++const registerResult = auth.register("Notch", "MySecret123", "MySecret123");
++console.log(registerResult.message);
++
++// Login flow
++const loginResult = auth.login("Notch", "MySecret123");
++console.log(loginResult.message);
++
++// Incorrect login attempts
++console.log(auth.login("Notch", "wrong").message);
++console.log(auth.login("Notch", "wrong").message);
++console.log(auth.login("Notch", "wrong").message);
++console.log(auth.login("Notch", "wrong").message); // triggers kick
++```
++
++## Wiring Into Your Server
++
++In your Eaglercraft server handler, call `auth.register()` when the player submits the registration form and call `auth.login()` when they submit the login form. If `auth.login()` returns `ok: false` and the message indicates a kick, call your server's disconnect API.
+diff --git a/src/auth.js b/src/auth.js
+new file mode 100644
+index 0000000000000000000000000000000000000000..9ebca6d220208283d3ab50a74d13a0400c6e9fb6
+--- /dev/null
++++ b/src/auth.js
+@@ -0,0 +1,65 @@
++const crypto = require("crypto");
++
++class AuthManager {
++  constructor({ maxFailedAttempts = 4, onKick } = {}) {
++    this.maxFailedAttempts = maxFailedAttempts;
++    this.onKick = onKick || (() => {});
++    this.accounts = new Map();
++    this.failedAttempts = new Map();
++  }
++
++  hashPassword(password) {
++    return crypto.createHash("sha256").update(password).digest("hex");
++  }
++
++  register(username, password, passwordConfirm) {
++    if (!username || !password || !passwordConfirm) {
++      return { ok: false, message: "Username and both password fields are required." };
++    }
++
++    if (password !== passwordConfirm) {
++      return { ok: false, message: "Passwords do not match." };
++    }
++
++    if (this.accounts.has(username)) {
++      return { ok: false, message: "That username is already registered." };
++    }
++
++    const passwordHash = this.hashPassword(password);
++    this.accounts.set(username, { passwordHash });
++    this.failedAttempts.delete(username);
++
++    return { ok: true, message: "Registration complete. Please log in." };
++  }
++
++  login(username, password) {
++    if (!this.accounts.has(username)) {
++      return { ok: false, message: "Account not found. Please register first." };
++    }
++
++    const { passwordHash } = this.accounts.get(username);
++    const incomingHash = this.hashPassword(password);
++
++    if (incomingHash === passwordHash) {
++      this.failedAttempts.delete(username);
++      return { ok: true, message: "Login successful." };
++    }
++
++    const attempts = (this.failedAttempts.get(username) || 0) + 1;
++    this.failedAttempts.set(username, attempts);
++
++    const remaining = Math.max(this.maxFailedAttempts - attempts, 0);
++
++    if (attempts >= this.maxFailedAttempts) {
++      this.onKick(username);
++      return { ok: false, message: "Too many failed attempts. Kicked." };
++    }
++
++    return {
++      ok: false,
++      message: `Incorrect password. You have ${remaining} more attempt${remaining === 1 ? "" : "s"}.`,
++    };
++  }
++}
++
++module.exports = { AuthManager };
+ 
+EOF
+)
